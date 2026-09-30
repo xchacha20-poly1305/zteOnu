@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/septrum101/zteOnu/app/factory"
 	"github.com/septrum101/zteOnu/app/onu"
 	"github.com/septrum101/zteOnu/version"
 )
@@ -21,6 +22,7 @@ var (
 	telnetPort    int
 	iface         string
 	mac           string
+	proto         factory.Protocol = factory.Proto61
 
 	rootCmd = &cobra.Command{
 		Use: "zteOnu",
@@ -42,6 +44,7 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&telnetPort, "tp", 23, "ONU telnet port")
 	rootCmd.PersistentFlags().StringVar(&iface, "iface", "", "network interface whose MAC to use (default: auto-detected from the route to the ONU)")
 	rootCmd.PersistentFlags().StringVarP(&mac, "mac", "m", "", "custom client MAC address for the SendInfo payload (e.g. 00:07:29:55:35:57); overrides --iface and auto-detection")
+	rootCmd.PersistentFlags().Var(&proto, "proto", `CheckLoginAuth version to send: 61 (empty or newrand=<int> SendSq) or 50 (re_rand=<server>&<seed>&<mac>)`)
 }
 
 func run() error {
@@ -59,6 +62,7 @@ func run() error {
 		TelnetPort: telnetPort,
 		Iface:      iface,
 		Mac:        mac,
+		Proto:      proto,
 	})
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -49,26 +50,49 @@ func (f *Factory) sendSq() (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
-	if resp.StatusCode() != 200 {
+	raw := resp.Body()
+	if resp.StatusCode() != http.StatusOK {
 		return 0, errors.New(resp.String())
 	}
+	if f.proto == Proto50 {
+		return f.applyNewSendSq(r, raw)
+	}
 
-	if strings.Contains(resp.String(), "newrand") {
+	body := string(raw)
+	if strings.Contains(body, "newrand") {
 		version = 2
-		newRand, _ := strconv.Atoi(strings.ReplaceAll(resp.String(), "newrand=", ""))
+		newRand, _ := strconv.Atoi(strings.ReplaceAll(body, "newrand=", ""))
 		f.key = getKeyPool(version, r, newRand)
-	} else if len(resp.String()) == 0 {
+	} else if body == "" {
 		version = 1
 		f.key = getKeyPool(version, r, 0)
 	} else {
-		return 0, errors.New("unknown error")
+		return 0, fmt.Errorf("unknown error: %s", body)
 	}
 
 	return version, nil
 }
 
+// applyNewSendSq records the ONU MAC and session key from a version50
+// SendSq body. The step printer reports this handshake as version 3.
+func (f *Factory) applyNewSendSq(clientRand int, body []byte) (uint8, error) {
+	serverRand, mac, err := parseNewSendSq(body)
+	if err != nil {
+		return 0, err
+	}
+	f.onuMAC = mac
+	f.onuMACSet = true
+	f.key = getKeyPoolV3(clientRand, serverRand)
+	return 3, nil
+}
+
 func (f *Factory) checkLoginAuth() error {
-	command := fmt.Sprintf("CheckLoginAuth.gch?&version61&user=%s&pass=%s", f.user, f.passwd)
+	var command string
+	if f.proto == Proto50 {
+		command = fmt.Sprintf("CheckLoginAuth.gch?version%d&user=%s&pass=%s", f.proto, f.user, f.passwd)
+	} else {
+		command = fmt.Sprintf("CheckLoginAuth.gch?&version%d&user=%s&pass=%s", f.proto, f.user, f.passwd)
+	}
 
 	payload, err := crypto.ECBEncrypt(
 		[]byte(command), f.key)
@@ -81,14 +105,18 @@ func (f *Factory) checkLoginAuth() error {
 		return err
 	}
 	switch resp.StatusCode() {
-	case 200:
-		if _, err := crypto.ECBDecrypt(resp.Body(), f.key); err != nil {
+	case http.StatusOK:
+		dec, err := crypto.ECBDecrypt(resp.Body(), f.key)
+		if err != nil {
 			return err
 		}
+		if f.proto == Proto50 && string(dec) != "FactoryMode.gch" {
+			return fmt.Errorf("unexpected auth response %q", dec)
+		}
 		return nil
-	case 400:
+	case http.StatusBadRequest:
 		return errors.New("unknown errors")
-	case 401:
+	case http.StatusUnauthorized:
 		return errors.New("errors user or password")
 	default:
 		return errors.New(resp.String())
@@ -109,15 +137,45 @@ func (f *Factory) sendInfo(mac [6]byte) error {
 	if err != nil {
 		return err
 	}
+	body := resp.String()
 	switch resp.StatusCode() {
-	case 200:
+	case http.StatusOK:
 		return nil
-	case 400:
-		return errors.New("unknown errors")
-	case 401:
-		return errors.New("info error")
+	case http.StatusBadRequest:
+		return errors.New("bad request: " + body)
+	case http.StatusUnauthorized:
+		return errors.New("info error: " + body)
 	default:
-		return errors.New(resp.String())
+		return errors.New(body)
+	}
+}
+
+func (f *Factory) sendInfoNew(mac [6]byte) error {
+	if !f.onuMACSet {
+		return errors.New("missing ONU MAC from SendSq")
+	}
+	plain, err := newSendInfoPlain(f.onuMAC[:], mac[:])
+	if err != nil {
+		return err
+	}
+	payload, err := crypto.ECBEncrypt([]byte(plain), f.key)
+	if err != nil {
+		return err
+	}
+	resp, err := f.cli.R().SetBody(payload).Post("webFacEntry")
+	if err != nil {
+		return err
+	}
+	body := resp.String()
+	switch resp.StatusCode() {
+	case http.StatusOK:
+		return nil
+	case http.StatusBadRequest:
+		return errors.New("bad request: " + body)
+	case http.StatusUnauthorized:
+		return errors.New("info error: " + body)
+	default:
+		return errors.New(body)
 	}
 }
 
@@ -175,7 +233,7 @@ func (f *Factory) handle(mac *[6]byte) (tlUser string, tlPass string, err error)
 	if err != nil {
 		return
 	}
-	fmt.Println("ok")
+	fmt.Println("ok, version: ", ver)
 
 	fmt.Print("step [3] check login auth: ")
 	switch ver {
@@ -189,10 +247,21 @@ func (f *Factory) handle(mac *[6]byte) (tlUser string, tlPass string, err error)
 			return
 		}
 		if err = f.sendInfo(*mac); err != nil {
-			return
+			return "", "", fmt.Errorf("sendInfo : %v", err)
 		}
 		if err = f.checkLoginAuth(); err != nil {
+			return "", "", fmt.Errorf("checkLoginAuth : %v", err)
+		}
+	case 3:
+		if mac == nil {
+			err = errors.New("device requires a client MAC (SendInfo)")
 			return
+		}
+		if err = f.sendInfoNew(*mac); err != nil {
+			return "", "", fmt.Errorf("sendInfo : %w", err)
+		}
+		if err = f.checkLoginAuth(); err != nil {
+			return "", "", fmt.Errorf("checkLoginAuth : %w", err)
 		}
 	}
 	fmt.Println("ok")

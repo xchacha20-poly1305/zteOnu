@@ -18,6 +18,7 @@ type Options struct {
 	TelnetPort int
 	Iface      string
 	Mac        string
+	Proto      factory.Protocol
 }
 
 // OpenTempTelnet runs the webFac flow for the client MAC selected by --iface,
@@ -26,7 +27,12 @@ type Options struct {
 // when the MAC is not honored, so the run only succeeds if the credentials
 // actually log in; on failure the returned connection is nil.
 func OpenTempTelnet(opts Options) (*telnet.Telnet, string, string, error) {
-	fac := factory.New(opts.User, opts.Pass, opts.IP, opts.HTTPPort, opts.Iface, opts.Mac)
+	switch opts.Proto {
+	case 0, factory.Proto61, factory.Proto50:
+	default:
+		return nil, "", "", fmt.Errorf("--proto must be %d or %d", factory.Proto61, factory.Proto50)
+	}
+	fac := factory.New(opts.User, opts.Pass, opts.IP, opts.HTTPPort, opts.Iface, opts.Mac, opts.Proto)
 
 	mac, err := fac.ClientMAC()
 	if err != nil {

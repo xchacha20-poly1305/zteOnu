@@ -28,6 +28,26 @@ var (
 	}
 )
 
+// AesKeyPoolV3 is the key pool for the version50 handshake (--proto 50).
+// The bytes are KEY_POOL from
+// https://github.com/thuandt/zte_modem_tools/blob/ca4d4b9815e9890ba7e8f1213585acd9358beaf2/pwn.py
+// It is not AesKeyPoolNew: firmwares that answer SendSq with
+// re_rand=<server>&<seed>&<mac> mix the session key from this pool.
+var AesKeyPoolV3 = []byte{
+	0x9C, 0x33, 0x75, 0xD1, 0x1C, 0x42, 0x45, 0x37,
+	0x18, 0x48, 0x91, 0x73, 0x17, 0x45, 0x79, 0x44,
+	0x43, 0xD7, 0xD5, 0x73, 0x33, 0x54, 0x76, 0xD2,
+	0xC5, 0xF1, 0x2C, 0x4F, 0x7A, 0xBA, 0x61, 0xD9,
+	0x5C, 0x69, 0xDF, 0x8C, 0xD2, 0x1C, 0xDE, 0x3B,
+	0x35, 0x2D, 0x2F, 0xE1, 0xDE, 0x4C, 0x77, 0xF5,
+	0x1A, 0x65, 0xD1, 0xFE, 0x18, 0x43, 0x8E, 0xA7,
+	0x42, 0x08, 0x04, 0x78, 0xD5, 0xE4, 0xF3, 0x34,
+	0xA4, 0xD3, 0xF2, 0x36, 0x47, 0x6D, 0x86, 0x9D,
+	0x42, 0x65, 0x13, 0x42, 0xDC, 0x42, 0x99, 0x48,
+	0xDC, 0x67, 0x9F, 0x9E, 0xDC, 0x46, 0x37, 0x5F,
+	0x84, 0x9F, 0x6F, 0x76, 0xCE, 0x79, 0x4F, 0x49,
+}
+
 // getKeyPool derives the session AES key from the sendSq parameters: r is the
 // second used as the rand, newR the device's "newrand" replay in version-2
 // handshakes. Every key-pool byte is xored with 0xA5.
@@ -38,10 +58,25 @@ func getKeyPool(version uint8, r int, newR int) []byte {
 		idx = ((0x1000193*r)&0x3F ^ newR) % 60
 		keyPool = AesKeyPoolNew[idx : idx+24]
 	}
-	newKeyPool := make([]byte, len(keyPool))
-	for i := range keyPool {
-		newKeyPool[i] = (keyPool[i] ^ 0xA5) & 0xFF
-	}
+	return xorKeyPool(keyPool)
+}
 
-	return newKeyPool
+// getKeyPoolV3 derives the session key for --proto 50.
+// clientRand is the rand sent in SendSq (0..59). serverRand is the first
+// field of re_rand=<server>&<seed>&<mac>. The mix is pwn.py's
+// (0x1000193 * clientRand) & 0x8000003F ^ serverRand, modulo 60.
+// For a rand in 0..59 bit 31 stays clear, so the mask equals & 0x3F.
+// See AesKeyPoolV3 for the script.
+func getKeyPoolV3(clientRand, serverRand int) []byte {
+	masked := (uint64(0x1000193) * uint64(clientRand)) & 0x8000003F
+	idx := int((masked ^ uint64(serverRand)) % 60)
+	return xorKeyPool(AesKeyPoolV3[idx : idx+24])
+}
+
+func xorKeyPool(keyPool []byte) []byte {
+	out := make([]byte, len(keyPool))
+	for i := range keyPool {
+		out[i] = keyPool[i] ^ 0xA5
+	}
+	return out
 }

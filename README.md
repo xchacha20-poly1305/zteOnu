@@ -21,6 +21,9 @@ go build -o zteonu .
 # Use a custom client MAC for the SendInfo payload (overrides everything)
 ./zteonu -i 192.168.1.1 -m 00:07:29:55:35:57
 
+# Post-2024 firmwares whose SendSq body is re_rand=<server>&<seed>&<onu mac>
+./zteonu -i 192.168.1.1 --port 80 --proto 50 -u CUAdmin -p '<password>'
+
 # Enable permanent telnet (user: root, pass: Zte521) by restarting telnetd in place, without rebooting
 ./zteonu -i 192.168.1.1 --telnet
 
@@ -52,6 +55,7 @@ writes the same permanent settings but applies them by rebooting the device; the
 | `--tp`             |       | `23`           | ONU telnet port                                                                                                                                                             |
 | `--iface`          |       | `""`           | network interface whose MAC to use (default: auto-detected from the route to the ONU)                                                                                       |
 | `--mac`            | `-m`  | `""`           | custom client MAC for the `SendInfo` payload (e.g. `00:07:29:55:35:57`); overrides `--iface` and auto-detection                                                             |
+| `--proto`          |       | `61`           | `CheckLoginAuth` version: `61` (empty or `newrand=<int>` SendSq) or `50` (`re_rand=<server>&<seed>&<mac>`)                                                                  |
 
 ## Notes on the client MAC
 
@@ -69,3 +73,9 @@ zeros). For each value `w` the device computes `w^1271 mod 2537` and keeps the l
 grouped by 6 and compared against the client MAC. The first six values are therefore chosen as preimages of the MAC
 bytes, i.e. `v` such that `(v^1271 mod 2537) & 0xff`
 equals the MAC byte; the remaining six are filler.
+
+`--proto 50` is a different SendInfo encoding, used when SendSq answers with three `&`-separated
+fields instead of `newrand=<int>` or an empty body. The 6 bytes after the second `&` are the ONU MAC.
+The payload still has to carry the client MAC (`--mac`, `--iface`, or the route to the ONU), and the
+login command is `CheckLoginAuth.gch?version50`. `--proto 61` sends `version61` and keeps the original
+flow.
